@@ -1,8 +1,5 @@
 setwd("~/Documents/Duke/MOOC/Kaggle/Titanic")
 
-
-
-
 # define a readData function for the administrative ease
 library(RCurl)
 readData <- function(path.name, file.name, column.types, missing.types) {
@@ -158,7 +155,8 @@ bytitle.age.data <- df.train %>%
     summarise(
       mean.Age = mean(Age, na.rm=T),
       median.Age = median(Age, na.rm=T),
-      n = n()) %>%
+      n = n(),
+      n.na = sum(is.na(Age))) %>%
    arrange(Title)
 
 bytitle.age.data
@@ -571,7 +569,6 @@ rf.tune
 # Strobl et al suggested setting mtry at the square root of the number of variables. 
 # In this case, that would be mtry = 3, which did produce the better RF model.
 
-
 ##
 ## let give the popular SVM a try
 ## 
@@ -656,11 +653,73 @@ cv.values <- resamples(list(Logit = titanic.tune.5.1,
                             RF = rf.tune, SVM = svm.tune))
 dotplot(cv.values, metric = "ROC")
 
+###
+### Part III: Make Decision
+###
 
-### oh, maybe this is it..
-### it compares the four models on the basis of ROC, sensitivity, and specificity
+df.test$Title <- getTitle(df.test)
+unique(df.test$Title) %in% levels(df.train$Title)
+
+## function for assigning a new title value to old title(s) 
+changeTitles <- function(data, old.titles, new.title) {
+  for (honorific in old.titles) {
+    data$Title[ which( data$Title == honorific)] <- new.title
+  }
+  return (data$Title)
+}
+df.test$Title <- changeTitles(df.test, c("Dona", "Ms"), "Mrs")
+
+missmap(df.test, col=c("yellow", "black"), 
+        main="Missingness Map of Train Data",
+        legend=T)
+# Age and Fare missing, need imputing
+# looks like I still need to use impute()
+
+imputeMedian <- function(impute.var, filter.var, var.levels) {
+  for (v in var.levels) {
+    impute.var[ which( filter.var == v)] <- impute(impute.var[ 
+      which( filter.var == v)], fun=median)
+  }
+  return (impute.var)
+}
+
+bytitle.age.data.test <- df.test %>%
+  group_by(Title) %>%
+  summarise(
+    mean.Age = mean(Age, na.rm=T),
+    median.Age = median(Age, na.rm=T),
+    n = n(),
+    n.na = sum(is.na(Age))) %>%
+  arrange(Title)
+
+bytitle.age.data.test
+title.na.groups <- bytitle.age.data.test$Title[which(bytitle.age.data.test$n.na > 0)]
+# impute Age
+df.test$Age <- imputeMedian(df.test$Age, df.test$Title, title.na.groups)
+
+# impute Fare
+df.test[which(is.na(df.test$Fare)),] # at class 3
+df.test$Fare <- imputeMedian(df.test$Fare, df.test$Pclass, c(3))
+
+# feature
+df.test <- featureEng(df.test)
+summary(df.test)
+test.keeps <- train.keeps[-1]
+df.test.pred <- df.test[, test.keeps]
+
+# use logistic model
+Fate.pred <- predict(titanic.tune.5.1, df.test.pred)
+Fate.pred.rf <- predict(rf.tune, df.test.pred)
+Fate.pred <- revalue(Fate.pred,  c("Perished" = 0, "Survived" = 1))
+Fate.pred.rf <- revalue(Fate.pred.rf,  c("Perished" = 0, "Survived" = 1))
 
 
 
+Prediction <- as.data.frame(Fate.pred.rf)
+Prediction$PassengerId <- df.test$PassengerId
+colnames(Prediction) <- c("Survived", "PassengerId")
 
-
+# write to submission file
+# write predictions to csv file for submission to Kaggle
+write.csv(Prediction[,c("PassengerId", "Survived")], 
+          file="Titanic_predictions_rf.csv", row.names=FALSE, quote=FALSE)
